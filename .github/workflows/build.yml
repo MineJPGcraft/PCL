@@ -1,22 +1,28 @@
 name: Build
+
+# 任意分支的任意一次 commit 推送都会触发 Windows 构建
 on:
   push:
-    paths:
-      - 'Plain Craft Launcher 2/**'
-      - '.github/workflows/**'
   pull_request:
-    paths:
-      - 'Plain Craft Launcher 2/**'
-      - '.github/workflows/**'
   workflow_dispatch:
+
+# 同一分支连续提交时自动取消旧构建，只保留最新一次
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
 
 jobs:
   build:
-    name: Build
+    name: Build (${{ matrix.configuration }})
     runs-on: windows-latest
-    strategy:  
-       matrix:  
-         configuration: [Debug, Release]
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        configuration: [Debug, Release]
 
     steps:
 
@@ -29,33 +35,32 @@ jobs:
     - name: Set Describe
       shell: bash
       run: |
-          describe=`git describe --tags --always`
+          describe=`git describe --tags --always | tr '/' '-'`
           echo "describe=$describe" >> $GITHUB_ENV
 
     - name: Setup MSBuild.exe
       uses: microsoft/setup-msbuild@v3
       with:
         msbuild-architecture: x64
-    
+
     - name: Update Help
       run:  |
         Set-Location ..
         git clone https://github.com/LTCatt/PCL2Help.git -b master --single-branch --depth 1
         Set-Location PCL2Help
-        Remove-Item -Path *.* -Recurse -Force
+        Remove-Item -Path .\.git -Recurse -Force
         Compress-Archive -Path .\* -DestinationPath .\Help.zip
         Copy-Item -Path .\Help.zip -Destination "${{ GITHUB.WORKSPACE }}\Plain Craft Launcher 2\Resources\Help.zip" -Force
         Set-Location ..
         Remove-Item PCL2Help -Recurse -Force
         Set-Location ${{ GITHUB.WORKSPACE }}
 
-
     - name: Replace
       run: |
         (gc "Plain Craft Launcher 2\Modules\ModSecret.vb") -replace 'Public OAuthClientId As String = If(Environment.GetEnvironmentVariable("PCL_MS_CLIENT_ID"), "")', 'Public OAuthClientId As String = If(Environment.GetEnvironmentVariable("PCL_MS_CLIENT_ID"), "${{ secrets.CLIENT_ID }}")' | Out-File "Plain Craft Launcher 2\Modules\ModSecret.vb"
         (gc "Plain Craft Launcher 2\Modules\ModSecret.vb") -replace 'Public CurseForgeAPIKey As String = If(Environment.GetEnvironmentVariable("PCL_CURSEFORGE_API_KEY"), "")', 'Public CurseForgeAPIKey As String = If(Environment.GetEnvironmentVariable("PCL_CURSEFORGE_API_KEY"), "${{ secrets.CURSEFORGE_API_KEY }}")' | Out-File "Plain Craft Launcher 2\Modules\ModSecret.vb"
         (gc "Plain Craft Launcher 2\Modules\Base\ModBase.vb") -replace 'Public Const CommitHash As String = ""', 'Public Const CommitHash As String = "${{ github.sha }}"' | Out-File "Plain Craft Launcher 2\Modules\Base\ModBase.vb"
-        
+
     - name: Restore NuGet Packages
       run: dotnet restore PCLCS\PCLCS.csproj
 
@@ -65,5 +70,9 @@ jobs:
     - name: Upload a Build Artifact
       uses: actions/upload-artifact@v7
       with:
-        name: ${{ matrix.configuration }} ${{ env.describe }}
-        path: Plain Craft Launcher 2\obj\${{ matrix.configuration }}\Plain Craft Launcher 2.exe
+        name: PCL2-${{ matrix.configuration }}-${{ env.describe }}
+        path: |
+          Plain Craft Launcher 2\bin\Plain Craft Launcher 2.exe
+          Plain Craft Launcher 2\bin\${{ matrix.configuration }}\Plain Craft Launcher 2.exe
+          Plain Craft Launcher 2\obj\${{ matrix.configuration }}\Plain Craft Launcher 2.exe
+        if-no-files-found: error
