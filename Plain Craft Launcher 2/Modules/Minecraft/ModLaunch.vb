@@ -885,8 +885,8 @@ LoginFinish:
         '初始请求
 Retry:
         McLaunchLog("开始微软登录步骤 1/6（原始登录）")
-        Dim PrepareJson As JObject = NetRequestByClientRetry("https://login.microsoftonline.com/consumers/oauth2/v2.0/devicecode", HttpMethod.Post,
-            Content:=$"client_id={OAuthClientId}&tenant=/consumers&scope=XboxLive.signin%20offline_access",
+        Dim PrepareJson As JObject = NetRequestByClientRetry(OAuthDeviceCodeUrl, HttpMethod.Post,
+            Content:=$"client_id={OAuthClientId}&response_type=device_code&scope={StringUtils.FormUrlEscape(OAuthScope)}",
             ContentType:="application/x-www-form-urlencoded", RequireJson:=True).DeserializeJson()
         McLaunchLog("网页登录地址：" & PrepareJson("verification_uri").ToString)
 
@@ -916,8 +916,8 @@ Retry:
 
         Dim Result As String
         Try
-            Result = NetRequestByClientMultiple("https://login.live.com/oauth20_token.srf", HttpMethod.Post,
-                Content:=$"client_id={OAuthClientId}&refresh_token={StringUtils.FormUrlEscape(Code)}&grant_type=refresh_token&scope=XboxLive.signin%20offline_access",
+            Result = NetRequestByClientMultiple(OAuthTokenUrl, HttpMethod.Post,
+                Content:=$"client_id={OAuthClientId}&refresh_token={StringUtils.FormUrlEscape(Code)}&grant_type=refresh_token&scope={StringUtils.FormUrlEscape(OAuthScope)}",
                 ContentType:="application/x-www-form-urlencoded",
                 Headers:={{"Accept-Language", "en-US,en;q=0.5"}, {"X-Requested-With", "XMLHttpRequest"}},
                 ThreadCount:=2)
@@ -926,6 +926,7 @@ Retry:
             Dim Response = ex.Response
             If Response.ContainsIgnoreCase("must sign in again") OrElse Response.ContainsIgnoreCase("password expired") OrElse
                (Response.Contains("refresh_token") AndAlso Response.ContainsIgnoreCase("is not valid")) OrElse '#269
+               Response.ContainsIgnoreCase("invalid_grant") OrElse '切换 ClientId 后旧的 v2 RefreshToken 必然失效，直接重新登录
                Response.ContainsIgnoreCase("expired") Then '#8611
                 Return ("Relogin", "")
             ElseIf Response.Contains("Account security interrupt") Then
