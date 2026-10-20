@@ -68,17 +68,102 @@ jobs:
         Remove-Item PCL2Help -Recurse -Force
         Set-Location ${{ GITHUB.WORKSPACE }}
 
-    - name: Replace
+    # 注意：这里必须用 [string].Replace() 做字面量替换。
+    # 之前的 -replace 把模式串当正则，源码里的 ( ) 被解析成分组，导致永远匹配不上且静默不报错。
+    - name: Inject Secrets
+      shell: pwsh
+      env:
+        PCL_CLIENT_ID: ${{ secrets.CLIENT_ID }}
+        PCL_CF_KEY: ${{ secrets.CURSEFORGE_API_KEY }}
+        PCL_COMMIT_SHA: ${{ github.sha }}
       run: |
-        (gc "Plain Craft Launcher 2\Modules\ModSecret.vb") -replace 'Public OAuthClientId As String = If(Environment.GetEnvironmentVariable("PCL_MS_CLIENT_ID"), "")', 'Public OAuthClientId As String = If(Environment.GetEnvironmentVariable("PCL_MS_CLIENT_ID"), "${{ secrets.CLIENT_ID }}")' | Out-File "Plain Craft Launcher 2\Modules\ModSecret.vb"
-        (gc "Plain Craft Launcher 2\Modules\ModSecret.vb") -replace 'Public CurseForgeAPIKey As String = If(Environment.GetEnvironmentVariable("PCL_CURSEFORGE_API_KEY"), "")', 'Public CurseForgeAPIKey As String = If(Environment.GetEnvironmentVariable("PCL_CURSEFORGE_API_KEY"), "${{ secrets.CURSEFORGE_API_KEY }}")' | Out-File "Plain Craft Launcher 2\Modules\ModSecret.vb"
-        (gc "Plain Craft Launcher 2\Modules\Base\ModBase.vb") -replace 'Public Const CommitHash As String = ""', 'Public Const CommitHash As String = "${{ github.sha }}"' | Out-File "Plain Craft Launcher 2\Modules\Base\ModBase.vb"
+        $ErrorActionPreference = 'Stop'
+
+        # ---------- 0. 先校验机密，没配就直接红掉 ----------
+        # 去掉复制粘贴时可能带上的首尾空白/换行
+        $env:PCL_CLIENT_ID = "$($env:PCL_CLIENT_ID)".Trim()
+        $env:PCL_CF_KEY = "$($env:PCL_CF_KEY)".Trim()
+
+        if ([string]::IsNullOrWhiteSpace($env:PCL_CLIENT_ID)) {
+          throw "secrets.CLIENT_ID 为空：请在仓库 Settings -> Secrets and variables -> Actions 里新建名为 CLIENT_ID 的 Repository secret。"
+        }
+        if ($env:PCL_CLIENT_ID -notmatch '^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$') {
+          throw "secrets.CLIENT_ID 格式不对：当前长度 $($env:PCL_CLIENT_ID.Length)，应为 36 位 GUID（形如 12345678-abcd-1234-abcd-1234567890ab）。"
+        }
+        if ([string]::IsNullOrWhiteSpace($env:PCL_CF_KEY)) {
+          throw "secrets.CURSEFORGE_API_KEY 为空：请在同一个页面新建名为 CURSEFORGE_API_KEY 的 Repository secret。"
+        }
+
+        # ---------- 1. 字面量替换 ----------
+        function Set-SourceLine([string]$Path, [string]$Old, [string]$New, [string]$Label) {
+          $text = [IO.File]::ReadAllText($Path)
+          if ($text.Contains($New)) { Write-Host "[$Label] 已是目标值，跳过"; return }
+          if (-not $text.Contains($Old)) { throw "[$Label] 在 $Path 中找不到待替换的源码行，请确认源码未被改动" }
+          [IO.File]::WriteAllText($Path, $text.Replace($Old, $New), (New-Object System.Text.UTF8Encoding($false)))
+          Write-Host "[$Label] 注入完成"
+        }
+
+        # 一律用绝对路径，避免 [IO.File] 相对路径按进程工作目录解析而写错文件
+        $root = $env:GITHUB_WORKSPACE
+        if ([string]::IsNullOrWhiteSpace($root)) { $root = (Get-Location).Path }
+        $secretPath = Join-Path $root "Plain Craft Launcher 2\Modules\ModSecret.vb"
+        $basePath   = Join-Path $root "Plain Craft Launcher 2\Modules\Base\ModBase.vb"
+        Set-SourceLine $secretPath `
+          'Public OAuthClientId As String = If(Environment.GetEnvironmentVariable("PCL_MS_CLIENT_ID"), "")' `
+          ('Public OAuthClientId As String = If(Environment.GetEnvironmentVariable("PCL_MS_CLIENT_ID"), "' + $env:PCL_CLIENT_ID + '")') `
+          'OAuthClientId'
+
+        Set-SourceLine $secretPath `
+          'Public CurseForgeAPIKey As String = If(Environment.GetEnvironmentVariable("PCL_CURSEFORGE_API_KEY"), "")' `
+          ('Public CurseForgeAPIKey As String = If(Environment.GetEnvironmentVariable("PCL_CURSEFORGE_API_KEY"), "' + $env:PCL_CF_KEY + '")') `
+          'CurseForgeAPIKey'
+
+        Set-SourceLine $basePath `
+          'Public Const CommitHash As String = ""' `
+          ('Public Const CommitHash As String = "' + $env:PCL_COMMIT_SHA + '"') `
+          'CommitHash'
+
+        # ---------- 2. 回读校验 ----------
+        $verify = [IO.File]::ReadAllText($secretPath)
+        if (-not $verify.Contains($env:PCL_CLIENT_ID)) { throw "回读校验失败：OAuthClientId 没有写入" }
+        if (-not $verify.Contains($env:PCL_CF_KEY)) { throw "回读校验失败：CurseForgeAPIKey 没有写入" }
+        if (-not ([IO.File]::ReadAllText($basePath)).Contains($env:PCL_COMMIT_SHA)) { throw "回读校验失败：CommitHash 没有写入" }
+        Write-Host "凭证注入完成，ClientId 长度 $($env:PCL_CLIENT_ID.Length)"
 
     - name: Restore NuGet Packages
       run: dotnet restore PCLCS\PCLCS.csproj
 
     - name: Build
       run: msbuild "Plain Craft Launcher 2\Plain Craft Launcher 2.vbproj" -p:Configuration=${{ matrix.configuration }}
+
+    # 直接检查二进制，确保 ClientId 真的被编进了 exe，避免再次出现"构建成功但登录失败"
+    - name: Verify ClientId In Exe
+      shell: pwsh
+      env:
+        PCL_CLIENT_ID: ${{ secrets.CLIENT_ID }}
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $root = $env:GITHUB_WORKSPACE
+        if ([string]::IsNullOrWhiteSpace($root)) { $root = (Get-Location).Path }
+        $candidates = @(
+          (Join-Path $root "Plain Craft Launcher 2\bin\Plain Craft Launcher 2.exe"),
+          (Join-Path $root "Plain Craft Launcher 2\bin\${{ matrix.configuration }}\Plain Craft Launcher 2.exe"),
+          (Join-Path $root "Plain Craft Launcher 2\obj\${{ matrix.configuration }}\Plain Craft Launcher 2.exe")
+        )
+        $exe = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+        if (-not $exe) { throw "找不到编译产物 exe，候选路径：$($candidates -join ' | ')" }
+
+        $bytes = [IO.File]::ReadAllBytes($exe)
+        $hit = [Text.Encoding]::ASCII.GetString($bytes).Contains($env:PCL_CLIENT_ID)
+        if (-not $hit) {
+          # .NET 把字符串常量以 UTF-16 存放，起始偏移可能是奇数，两种对齐都查一遍
+          $unicode = [Text.Encoding]::Unicode
+          foreach ($offset in 0, 1) {
+            if ($unicode.GetString($bytes, $offset, $bytes.Length - $offset).Contains($env:PCL_CLIENT_ID)) { $hit = $true; break }
+          }
+        }
+        if (-not $hit) { throw "编译产物 $exe 里找不到 ClientId，注入未生效" }
+        Write-Host "产物校验通过：$exe 中已包含 ClientId"
 
     - name: Upload a Build Artifact
       uses: actions/upload-artifact@v7
