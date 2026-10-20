@@ -1,10 +1,20 @@
 name: Build
 
 # 任意分支的任意一次 commit 推送都会触发 Windows 构建
+# 也可以在 Actions 页面点 "Run workflow" 手动触发，并可选择只编 Debug 或只编 Release
 on:
   push:
   pull_request:
   workflow_dispatch:
+    inputs:
+      configuration:
+        description: '要编译的配置（all = Debug + Release）'
+        type: choice
+        default: all
+        options:
+          - all
+          - Debug
+          - Release
 
 # 同一分支连续提交时自动取消旧构建，只保留最新一次
 concurrency:
@@ -23,6 +33,9 @@ jobs:
       fail-fast: false
       matrix:
         configuration: [Debug, Release]
+        # 手动触发且只选了一个配置时，把另一个从矩阵里排除；非手动触发时该值不匹配任何配置，等于不排除
+        exclude:
+          - configuration: ${{ inputs.configuration == 'Release' && 'Debug' || (inputs.configuration == 'Debug' && 'Release' || 'none') }}
 
     steps:
 
