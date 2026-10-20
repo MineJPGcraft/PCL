@@ -953,7 +953,7 @@ Retry:
            ""Properties"": {
                ""AuthMethod"": ""RPS"",
                ""SiteName"": ""user.auth.xboxlive.com"",
-               ""RpsTicket"": """ & If(AccessToken.StartsWithF("d="), "", "d=") & AccessToken & """
+               ""RpsTicket"": """ & If(AccessToken.StartsWithF("d=") OrElse AccessToken.StartsWithF("t="), "", If(OAuthIsTitleClient, "t=", "d=")) & AccessToken & """
            },
            ""RelyingParty"": ""http://auth.xboxlive.com"",
            ""TokenType"": ""JWT""

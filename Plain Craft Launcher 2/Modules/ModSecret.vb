@@ -13,6 +13,8 @@ Friend Module ModSecret
     Public Const OAuthDeviceCodeUrl As String = "https://login.live.com/oauth20_connect.srf"
     Public Const OAuthTokenUrl As String = "https://login.live.com/oauth20_token.srf"
     Public Const OAuthScope As String = "service::user.auth.xboxlive.com::MBI_SSL"
+    '官方 ClientId 属于 title id，XBL 的 RpsTicket 必须用 t= 前缀；自建 Azure 应用（GUID 格式）用 d=
+    Public Const OAuthIsTitleClient As Boolean = True
     'CurseForge API Key
     Public CurseForgeAPIKey As String = If(Environment.GetEnvironmentVariable("PCL_CURSEFORGE_API_KEY"), "")
     '用于匿名数据收集的腾讯云日志服务上报 URL，形如 https://{region}.cls.tencentcs.com/track?topic_id={topic_id}
